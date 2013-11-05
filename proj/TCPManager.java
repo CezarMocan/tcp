@@ -53,8 +53,15 @@ public class TCPManager {
         return (socketSpace.register(localPort, socket));
     }
 
-    public boolean portBusy(int localPort) {
-        return false;
+    public void incomingTransportPacket(int remoteAddr, int remotePort, int localAddr, int localPort, Transport transportMessage) {
+        if (socketSpace.portBusy(localPort)) {
+            // We have already created a connection socket for this port
+            TCPSock socket = socketSpace.get(localPort);
+            socket.receive(remoteAddr, remotePort, transportMessage);
+        } else {
+            // Well if I don't find the port here, then nobody's listening for your packet mwhahahahaaaa!
+            // drop;
+        }
     }
 
     /*

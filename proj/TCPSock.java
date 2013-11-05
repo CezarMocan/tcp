@@ -44,6 +44,8 @@ public class TCPSock {
 
     private int backlog;
 
+    private int seqNo;
+
     private ISocketSpace pendingConnections;
     private ISocketSpace workingConnections;
 
@@ -66,9 +68,79 @@ public class TCPSock {
         this.tcpManager = tcpManager;
         this.sockType = sockType;
         this.localPort = localPort;
-        this.state = State.ESTABLISHED;
+        this.state = State.SYN_SENT;
 
         this.remotePort = this.remoteAddr = -1;
+    }
+
+    public void receive(int remoteAddr, int remotePort, Transport transportMessage) {
+        if (this.sockType == SockType.UNDEFINED) {
+            // Oups shouldn't be here!
+            node.logError("Socket of undefined type is receiving data wtf man!");
+            return;
+        }
+
+        RemoteHost remoteHost = new RemoteHost(remoteAddr, remotePort);
+
+        switch (transportMessage.getType()) {
+            case Transport.SYN:
+                this.receiveSyn(remoteHost, transportMessage);
+                break;
+            case Transport.ACK:
+                this.receiveAck(remoteHost, transportMessage);
+                break;
+            case Transport.FIN:
+                this.receiveFin(remoteHost, transportMessage);
+                break;
+            case Transport.DATA:
+                this.receiveData(remoteHost, transportMessage);
+        }
+
+        /*
+        if (this.sockType == SockType.SERVER_SOCKET) {
+
+        } else if (this.sockType == SockType.SERVER_CONNECTION) {
+
+        } else if (this.sockType == SockType.CLIENT_CONNECTION) {
+
+        }
+        */
+    }
+
+    private void receiveSyn(RemoteHost remoteHost, Transport transportMessage) {
+        if (this.sockType == SockType.SERVER_SOCKET) {
+            // Check if there is a socket in pendingConnections or workingConnections on this remoteHost;
+            // If there is -> drop packet
+            // If there's not -> create new socket on that, add it to pendingConnections;
+            if (pendingConnections.portBusy(remoteHost) || workingConnections.portBusy(remoteHost)) {
+                // Received a SYN for a connection that's already established; drop
+                // WTF do I do with the sequence number?
+                return;
+            }
+
+            TCPSock connectionSocket = null;
+            try {
+                connectionSocket = new TCPSock(node, tcpManager, localPort, SockType.SERVER_CONNECTION);
+            } catch (Exception e) {
+                node.logError("Exception in creating connection socket!" + e);
+                return;
+            }
+
+            pendingConnections.register(remoteHost, connectionSocket);
+            node.logOutput("Incoming connection from " + remoteHost.toString());
+        }
+    }
+
+    private void receiveAck(RemoteHost remoteHost, Transport transportMessage) {
+
+    }
+
+    private void receiveFin(RemoteHost remoteHost, Transport transportMessage) {
+
+    }
+
+    private void receiveData(RemoteHost remoteHost, Transport transportMessage) {
+
     }
 
     /*
@@ -83,8 +155,10 @@ public class TCPSock {
      * @return int 0 on success, -1 otherwise
      */
     public int bind(int localPort) {
-        if (tcpManager.registerSock(localPort, this) == -1)
+        if (tcpManager.registerSock(localPort, this) == -1) {
+            node.logError("Error in binding to local port " + localPort);
             return -1;
+        }
 
         this.localPort = localPort;
         return 0;
@@ -154,6 +228,12 @@ public class TCPSock {
 
         this.remoteAddr = destAddr;
         this.remotePort = destPort;
+        this.seqNo = 0;
+
+        // Send SYN packet to server
+        Transport synMessage = new Transport(this.localPort, this.remotePort, Transport.SYN, 0, this.seqNo, new byte[0]);
+        byte[] packetPayload = synMessage.pack();
+        this.node.sendSegment(node.getAddr(), this.remoteAddr, Protocol.TRANSPORT_PKT, packetPayload);
 
         return 0;
     }

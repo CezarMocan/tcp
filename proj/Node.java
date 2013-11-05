@@ -151,14 +151,19 @@ public class Node {
 
             case Protocol.TRANSPORT_PKT:
                 this.receiveTransportPacket(from, packet);
+                break;
 
             default:
                 logError("Packet with unknown protocol received. Protocol: " + packet.getProtocol());
         }
     }
 
-    private void receiveTransportPacket(int from, Packet packet) {
-
+    private void receiveTransportPacket(int remoteAddr, Packet packet) {
+        int localAddr = packet.getDest();
+        Transport transportMessage = Transport.unpack(packet.getPayload());
+        int remotePort = transportMessage.getSrcPort();
+        int localPort = transportMessage.getDestPort();
+        tcpMan.incomingTransportPacket(remoteAddr, remotePort, localAddr, localPort, transportMessage);
     }
 
     private void receivePing(Packet packet) {
@@ -283,11 +288,12 @@ public class Node {
 
 
             TCPSock sock = this.tcpMan.socket();
+
             sock.bind(localPort);
             sock.connect(destAddr, port);
-            TransferClient client = new
-                TransferClient(manager, this, sock, amount, interval, sz);
-            client.start();
+            //TransferClient client = new
+            //    TransferClient(manager, this, sock, amount, interval, sz);
+            //client.start();
 
             return true;
         } catch (Exception e) {
