@@ -1,3 +1,5 @@
+import java.util.Map;
+
 /**
  * <p>Title: CPSC 433/533 Programming Assignment</p>
  *
@@ -17,10 +19,13 @@ public class TCPManager {
 
     private static final byte dummy[] = new byte[0];
 
+    private ISocketSpace socketSpace;
+
     public TCPManager(Node node, int addr, Manager manager) {
         this.node = node;
         this.addr = addr;
         this.manager = manager;
+        this.socketSpace = new SocketSpace<Integer>();
     }
 
     /**
@@ -41,7 +46,15 @@ public class TCPManager {
      *                 a local port
      */
     public TCPSock socket() {
-        return new TCPSock();
+        return new TCPSock(node, this);
+    }
+
+    public int registerSock(int localPort, TCPSock socket) {
+        return (socketSpace.register(localPort, socket));
+    }
+
+    public boolean portBusy(int localPort) {
+        return false;
     }
 
     /*

@@ -40,9 +40,9 @@ public class Node {
      * @param addr The address of this node
      */
     public Node(Manager manager, int addr) {
-	this.manager = manager;
-	this.addr = addr;
-	this.pings = new ArrayList();
+        this.manager = manager;
+        this.addr = addr;
+        this.pings = new ArrayList();
 
         // Fishnet reliable data transfer
         this.tcpMan = new TCPManager(this, addr, manager);
@@ -140,51 +140,57 @@ public class Node {
     }
 
     private void receivePacket(int from, Packet packet) {
-	switch(packet.getProtocol()) {
+        switch(packet.getProtocol()) {
+            case Protocol.PING_PKT:
+                this.receivePing(packet);
+                break;
 
-	case Protocol.PING_PKT:
-	    this.receivePing(packet);
-	    break;
+            case Protocol.PING_REPLY_PKT:
+                this.receivePingReply(packet);
+                break;
 
-	case Protocol.PING_REPLY_PKT:
-	    this.receivePingReply(packet);
-	    break;
+            case Protocol.TRANSPORT_PKT:
+                this.receiveTransportPacket(from, packet);
 
-	default:
-	    logError("Packet with unknown protocol received. Protocol: " + packet.getProtocol());
-	}
+            default:
+                logError("Packet with unknown protocol received. Protocol: " + packet.getProtocol());
+        }
+    }
+
+    private void receiveTransportPacket(int from, Packet packet) {
+
     }
 
     private void receivePing(Packet packet) {
-	logOutput("Received Ping from " + packet.getSrc() + " with message: " + Utility.byteArrayToString(packet.getPayload()));
+        logOutput("Received Ping from " + packet.getSrc() + " with message: " + Utility.byteArrayToString(packet.getPayload()));
 
-	try {
-	    Packet reply = new Packet(packet.getSrc(), this.addr, Packet.MAX_TTL, Protocol.PING_REPLY_PKT, 0, packet.getPayload());
-	    this.send(packet.getSrc(), reply);
-	}catch(IllegalArgumentException e) {
-	    logError("Exception while trying to send a Ping Reply. Exception: " + e);
-	}
+        try {
+            Packet reply = new Packet(packet.getSrc(), this.addr, Packet.MAX_TTL, Protocol.PING_REPLY_PKT, 0, packet.getPayload());
+            this.send(packet.getSrc(), reply);
+        }catch(IllegalArgumentException e) {
+            logError("Exception while trying to send a Ping Reply. Exception: " + e);
+        }
     }
 
     // Check that ping reply matches what was sent
     private void receivePingReply(Packet packet) {
-	Iterator iter = this.pings.iterator();
-	String payload = Utility.byteArrayToString(packet.getPayload());
-	while(iter.hasNext()) {
-	    PingRequest pingRequest = (PingRequest)iter.next();
-	    if( (pingRequest.getDestAddr() == packet.getSrc()) &&
-		( Utility.byteArrayToString(pingRequest.getMsg()).equals(payload))) {
+        Iterator iter = this.pings.iterator();
+        String payload = Utility.byteArrayToString(packet.getPayload());
+        while(iter.hasNext()) {
+            PingRequest pingRequest = (PingRequest)iter.next();
+            if( (pingRequest.getDestAddr() == packet.getSrc()) &&
+            ( Utility.byteArrayToString(pingRequest.getMsg()).equals(payload))) {
 
-		logOutput("Got Ping Reply from " + packet.getSrc() + ": " + payload);
-		try {
-		    iter.remove();
-		}catch(Exception e) {
-		    logError("Exception occured while trying to remove an element from ArrayList pings while processing Ping Reply.  Exception: " + e);
-		}
-		return;
-	    }
-	}
-	logError("Unexpected Ping Reply from " + packet.getSrc() + ": " + payload);
+            logOutput("Got Ping Reply from " + packet.getSrc() + ": " + payload);
+            try {
+                iter.remove();
+            }catch(Exception e) {
+                logError("Exception occured while trying to remove an element from ArrayList pings while processing Ping Reply.  Exception: " + e);
+            }
+            return;
+            }
+        }
+        logError("Unexpected Ping Reply from " + packet.getSrc() + ": " + payload);
     }
 
     private void send(int destAddr, Packet packet) {

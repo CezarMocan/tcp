@@ -1,3 +1,5 @@
+import com.sun.tools.javac.util.Pair;
+
 /**
  * <p>Title: CPSC 433/533 Programming Assignment</p>
  *
@@ -21,9 +23,52 @@ public class TCPSock {
         ESTABLISHED,
         SHUTDOWN // close requested, FIN not sent (due to unsent data in queue)
     }
-    private State state;
 
-    public TCPSock() {
+    enum SockType {
+        // Type of socket
+        UNDEFINED, // Gets assigned in the constructor
+        SERVER_SOCKET,    // If listen is called, we have a server socket (src_ip, src_port, *, *)
+        SERVER_CONNECTION, // Can be instantiated only by a SERVER_SOCKET;
+                            // handles a connection with a client (src_ip, src_port, dest_ip, dest_port)
+        CLIENT_CONNECTION     // If connect is called, we have a client socket
+    }
+
+    private State state;
+    private Node node;
+    private TCPManager tcpManager;
+    private int localPort;
+    private SockType sockType;
+
+    private int remoteAddr;
+    private int remotePort;
+
+    private int backlog;
+
+    private ISocketSpace pendingConnections;
+    private ISocketSpace workingConnections;
+
+    public TCPSock(Node node, TCPManager tcpManager) {
+        this.node = node;
+        this.tcpManager = tcpManager;
+
+        this.sockType = SockType.UNDEFINED;
+        this.state = State.CLOSED;
+
+        this.remotePort = this.remoteAddr = -1;
+    }
+
+    private TCPSock(Node node, TCPManager tcpManager, int localPort, SockType sockType) throws Exception {
+
+        if (sockType != SockType.SERVER_CONNECTION)
+            throw new Exception("This constructor can only be used for server connection sockets!");
+
+        this.node = node;
+        this.tcpManager = tcpManager;
+        this.sockType = sockType;
+        this.localPort = localPort;
+        this.state = State.ESTABLISHED;
+
+        this.remotePort = this.remoteAddr = -1;
     }
 
     /*
@@ -38,7 +83,11 @@ public class TCPSock {
      * @return int 0 on success, -1 otherwise
      */
     public int bind(int localPort) {
-        return -1;
+        if (tcpManager.registerSock(localPort, this) == -1)
+            return -1;
+
+        this.localPort = localPort;
+        return 0;
     }
 
     /**
@@ -47,7 +96,14 @@ public class TCPSock {
      * @return int 0 on success, -1 otherwise
      */
     public int listen(int backlog) {
-        return -1;
+        this.sockType = SockType.SERVER_SOCKET;
+        this.backlog = backlog;
+        this.state = State.LISTEN;
+
+        this.pendingConnections = new SocketSpace<RemoteHost>(backlog);
+        this.workingConnections = new SocketSpace<RemoteHost>();
+
+        return 0;
     }
 
     /**
@@ -56,7 +112,12 @@ public class TCPSock {
      * @return TCPSock The first established connection on the request queue
      */
     public TCPSock accept() {
-        return null;
+        Pair<RemoteHost, TCPSock> currentConnection = pendingConnections.pop();
+        if (currentConnection == null)
+            return null;
+
+        workingConnections.register(currentConnection.fst, currentConnection.snd);
+        return currentConnection.snd;
     }
 
     public boolean isConnectionPending() {
@@ -83,7 +144,18 @@ public class TCPSock {
      * @return int 0 on success, -1 otherwise
      */
     public int connect(int destAddr, int destPort) {
-        return -1;
+        if (this.sockType == SockType.UNDEFINED)
+            this.sockType = SockType.CLIENT_CONNECTION;
+
+        if (this.remoteAddr != -1 || this.remotePort != -1) {
+            node.logError("Socket already bound to address" + this.remoteAddr + " port: " + this.remotePort);
+            return -1;
+        }
+
+        this.remoteAddr = destAddr;
+        this.remotePort = destPort;
+
+        return 0;
     }
 
     /**
@@ -129,4 +201,8 @@ public class TCPSock {
     /*
      * End of socket API
      */
+
+    public int getLocalPort() {
+        return localPort;
+    }
 }
