@@ -49,7 +49,7 @@ public class TransferClient extends FishThread {
 
     public void execute() {
         if (sock.isConnectionPending()) {
-            //node.logOutput("connecting...");
+            node.logOutput("connecting...");
             return;
         } else if (sock.isConnected()) {
 
@@ -82,6 +82,8 @@ public class TransferClient extends FishThread {
 
             int len = Math.min(buf.length - index, amount);
             int count = sock.write(buf, index, len);
+
+            node.logOutput("Sent " + count + " bytes to server!");
 
             if (count == -1) {
                 // on error, release the socket immediately

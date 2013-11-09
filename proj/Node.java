@@ -208,14 +208,23 @@ public class Node {
 
     // Adds a timer, to fire in deltaT milliseconds, with a callback to a public function of this class that takes no parameters
     private void addTimer(long deltaT, String methodName) {
-	try {
-	    Method method = Callback.getMethod(methodName, this, null);
-	    Callback cb = new Callback(method, this, null);
-	    this.manager.addTimer(this.addr, deltaT, cb);
-	}catch(Exception e) {
-	    logError("Failed to add timer callback. Method Name: " + methodName +
-		     "\nException: " + e);
-	}
+        try {
+            Method method = Callback.getMethod(methodName, this, null);
+            Callback cb = new Callback(method, this, null);
+            this.manager.addTimer(this.addr, deltaT, cb);
+        }catch(Exception e) {
+            logError("Failed to add timer callback. Method Name: " + methodName +
+                 "\nException: " + e);
+        }
+    }
+
+    public void addTimer(Callback cb, long deltaT) {
+        try {
+            this.manager.addTimer(this.addr, deltaT, cb);
+        }catch(Exception e) {
+            logError("Failed to add timer callback. Callback: " + cb +
+                    "\nException: " + e);
+        }
     }
 
     // Fishnet reliable data transfer
@@ -291,9 +300,9 @@ public class Node {
 
             sock.bind(localPort);
             sock.connect(destAddr, port);
-            //TransferClient client = new
-            //    TransferClient(manager, this, sock, amount, interval, sz);
-            //client.start();
+            TransferClient client = new
+                TransferClient(manager, this, sock, amount, interval, sz);
+            client.start();
 
             return true;
         } catch (Exception e) {

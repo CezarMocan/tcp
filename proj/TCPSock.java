@@ -1,5 +1,8 @@
 import com.sun.tools.javac.util.Pair;
 
+import java.lang.reflect.Method;
+import java.util.Random;
+
 /**
  * <p>Title: CPSC 433/533 Programming Assignment</p>
  *
@@ -33,6 +36,9 @@ public class TCPSock {
         CLIENT_CONNECTION     // If connect is called, we have a client socket
     }
 
+    public static int RCV_BUFFER_SIZE = 65536;
+    public static int CLOSE_TIMEOUT = 1000; // Check every second if all data has been read from buffer and can close socket
+
     private State state;
     private Node node;
     private TCPManager tcpManager;
@@ -46,8 +52,28 @@ public class TCPSock {
 
     private int seqNo;
 
+    private Random randomGenerator;
+
+    private ReceiveBuffer receiveBuffer;
+
     private ISocketSpace pendingConnections;
     private ISocketSpace workingConnections;
+
+    /**
+     * Bind a socket to a local port
+     *
+     * @param localPort int local port number to bind the socket to
+     * @return int 0 on success, -1 otherwise
+     */
+    public int bind(int localPort) {
+        if (tcpManager.registerSock(localPort, this) == -1) {
+            node.logError("Error in binding to local port " + localPort);
+            return -1;
+        }
+
+        this.localPort = localPort;
+        return 0;
+    }
 
     public TCPSock(Node node, TCPManager tcpManager) {
         this.node = node;
@@ -69,6 +95,7 @@ public class TCPSock {
         this.sockType = sockType;
         this.localPort = localPort;
         this.state = State.SYN_SENT;
+        this.seqNo = 0;
 
         this.remotePort = this.remoteAddr = -1;
     }
@@ -95,74 +122,129 @@ public class TCPSock {
             case Transport.DATA:
                 this.receiveData(remoteHost, transportMessage);
         }
+    }
 
-        /*
-        if (this.sockType == SockType.SERVER_SOCKET) {
-
-        } else if (this.sockType == SockType.SERVER_CONNECTION) {
-
-        } else if (this.sockType == SockType.CLIENT_CONNECTION) {
-
+    private void sendSynReply(Transport synRequest) throws Exception {
+        if (this.sockType != SockType.SERVER_CONNECTION) {
+            throw new Exception("Expected to have SERVER_CONNECTION socket, got" + this.sockType);
         }
-        */
+
+        this.seqNo = synRequest.getSeqNum() + 1;
+        Transport synAck = new Transport(this.localPort, this.remotePort, Transport.ACK, 0, this.seqNo, new byte[0]);
+        this.sendTransportPacket(synAck);
     }
 
     private void receiveSyn(RemoteHost remoteHost, Transport transportMessage) {
         if (this.sockType == SockType.SERVER_SOCKET) {
+            node.logOutput("S");
             // Check if there is a socket in pendingConnections or workingConnections on this remoteHost;
             // If there is -> drop packet
             // If there's not -> create new socket on that, add it to pendingConnections;
             if (pendingConnections.portBusy(remoteHost) || workingConnections.portBusy(remoteHost)) {
-                // Received a SYN for a connection that's already established; drop
-                // WTF do I do with the sequence number?
-                return;
+                TCPSock connSocket = workingConnections.get(remoteHost);
+
+                //TODO: How exactly do I handle this case?
+                // Basically client has closed connection but opened a new one before I finished reading
+                // everything from the socket.
+                // Do I open a new socket? MA FUT IN VOI DACA DA
+                if (connSocket.state == State.CLOSED)
+                    workingConnections.deregister(remoteHost);
+                else
+                    return;
             }
 
             TCPSock connectionSocket = null;
             try {
                 connectionSocket = new TCPSock(node, tcpManager, localPort, SockType.SERVER_CONNECTION);
+                connectionSocket.connect(remoteHost.getAddress(), remoteHost.getPort());
             } catch (Exception e) {
                 node.logError("Exception in creating connection socket!" + e);
                 return;
             }
 
             pendingConnections.register(remoteHost, connectionSocket);
-            node.logOutput("Incoming connection from " + remoteHost.toString());
+            try {
+                connectionSocket.sendSynReply(transportMessage);
+            } catch (Exception e) {
+                node.logError("Exception in replying to SYN " + e);
+                return;
+            }
+
+            node.logError("Incoming connection from " + remoteHost.toString());
+        } else {
+            node.logError("Received SYN in something else than a server socket!");
         }
     }
 
     private void receiveAck(RemoteHost remoteHost, Transport transportMessage) {
+        if (this.sockType == SockType.CLIENT_CONNECTION) {
+            //TODO: This shit is only for stop'n'wait
+            if (transportMessage.getSeqNum() > this.seqNo)
+                node.logOutput(":");
+            else
+                node.logOutput("?");
 
+            node.logError("Received reply from server " + remoteHost.toString() + " like a boss! " + transportMessage.getSeqNum());
+            this.state = State.ESTABLISHED;
+        }
     }
 
     private void receiveFin(RemoteHost remoteHost, Transport transportMessage) {
+        if (this.sockType == SockType.SERVER_SOCKET) {
+            workingConnections.get(remoteHost).receiveFin(remoteHost, transportMessage);
+            //workingConnections.deregister(remoteHost);
+            return;
+        }
+        //TODO: How exactly does FIN work between server and client?
+        node.logOutput("F");
+
+        if (this.sockType == SockType.CLIENT_CONNECTION) {
+            this.state = State.CLOSED;
+            tcpManager.deregisterSock(this.localPort);
+        } else if (this.sockType == SockType.SERVER_CONNECTION) {
+            node.logError("Received FIN on server connection socket");
+            this.close();
+        } else {
+            //shouldn't be here!
+            node.logError("Release requested on an unknown socket type! Noop.");
+            return;
+        }
 
     }
 
     private void receiveData(RemoteHost remoteHost, Transport transportMessage) {
+        if (this.sockType == SockType.SERVER_SOCKET) {
+            workingConnections.get(remoteHost).receiveData(remoteHost, transportMessage);
+            return;
+        }
 
+        node.logOutput(".");
+
+        node.logError("Received " + transportMessage.getPayload().length + " bytes of data from " + remoteHost);
+        node.logError("Local seqNo is " + this.seqNo + " Remote seqNo is " + transportMessage.getSeqNum());
+
+        if (this.seqNo != transportMessage.getSeqNum()) {
+            //Since I'm currently implementing stop&wait -> drop
+            return;
+        }
+
+        if (receiveBuffer.append(transportMessage.getPayload()) == -1) {
+            //TODO: Receive buffer full; what do i do?
+            node.logError("FUCK FUCK FUCK Socket receive buffer is full for port " + this.localPort);
+            return;
+        }
+
+        //TODO: Send an ACK here
+        this.seqNo = this.seqNo + transportMessage.getPayload().length;
+        Transport ackMessage = new Transport(this.localPort, this.remotePort, Transport.ACK, 0, this.seqNo, new byte[0]);
+        sendTransportPacket(ackMessage);
+        // FUTU-TI MORTII MA-TII DE TEMA BAGA-MI-AS PULA IN GURA TA PIZDA MA-TII SA-MI BAGI MANA IN CUR SI SA-MI FACI O LABA LA CACAT
     }
 
     /*
      * The following are the socket APIs of TCP transport service.
      * All APIs are NON-BLOCKING.
      */
-
-    /**
-     * Bind a socket to a local port
-     *
-     * @param localPort int local port number to bind the socket to
-     * @return int 0 on success, -1 otherwise
-     */
-    public int bind(int localPort) {
-        if (tcpManager.registerSock(localPort, this) == -1) {
-            node.logError("Error in binding to local port " + localPort);
-            return -1;
-        }
-
-        this.localPort = localPort;
-        return 0;
-    }
 
     /**
      * Listen for connections on a socket
@@ -176,6 +258,8 @@ public class TCPSock {
 
         this.pendingConnections = new SocketSpace<RemoteHost>(backlog);
         this.workingConnections = new SocketSpace<RemoteHost>();
+
+        //TODO: Create task that fires periodically for removing closed sockets
 
         return 0;
     }
@@ -192,22 +276,6 @@ public class TCPSock {
 
         workingConnections.register(currentConnection.fst, currentConnection.snd);
         return currentConnection.snd;
-    }
-
-    public boolean isConnectionPending() {
-        return (state == State.SYN_SENT);
-    }
-
-    public boolean isClosed() {
-        return (state == State.CLOSED);
-    }
-
-    public boolean isConnected() {
-        return (state == State.ESTABLISHED);
-    }
-
-    public boolean isClosurePending() {
-        return (state == State.SHUTDOWN);
     }
 
     /**
@@ -228,26 +296,32 @@ public class TCPSock {
 
         this.remoteAddr = destAddr;
         this.remotePort = destPort;
-        this.seqNo = 0;
+        this.receiveBuffer = new ReceiveBuffer(RCV_BUFFER_SIZE);
 
-        // Send SYN packet to server
-        Transport synMessage = new Transport(this.localPort, this.remotePort, Transport.SYN, 0, this.seqNo, new byte[0]);
-        byte[] packetPayload = synMessage.pack();
-        this.node.sendSegment(node.getAddr(), this.remoteAddr, Protocol.TRANSPORT_PKT, packetPayload);
+        if (this.sockType == SockType.CLIENT_CONNECTION) {
+            this.randomGenerator = new Random(System.nanoTime());
+            this.seqNo = randomGenerator.nextInt(1000000);
+
+            // Send SYN packet to server
+            Transport synMessage = new Transport(this.localPort, this.remotePort, Transport.SYN, 0, this.seqNo, new byte[0]);
+            this.sendTransportPacket(synMessage);
+            this.state = State.SYN_SENT;
+        } else if (this.sockType == SockType.SERVER_CONNECTION) {
+            this.state = State.ESTABLISHED;
+        }
 
         return 0;
     }
 
-    /**
-     * Initiate closure of a connection (graceful shutdown)
-     */
-    public void close() {
-    }
-
-    /**
-     * Release a connection immediately (abortive shutdown)
-     */
-    public void release() {
+    // Method for sending non-DATA packets
+    // All the DATA packets should be sent using write()
+    // TODO: Check for ^
+    // Increase seqNo in method calling this, not here
+    private void sendTransportPacket(Transport data) {
+        //TODO: Check if I'm in the right type of socket
+        node.logError("Sent packet to " + this.remoteAddr + ":" + this.remotePort + " with seqNo=" + data.getSeqNum());
+        byte[] packetPayload = data.pack();
+        this.node.sendSegment(node.getAddr(), this.remoteAddr, Protocol.TRANSPORT_PKT, packetPayload);
     }
 
     /**
@@ -261,7 +335,24 @@ public class TCPSock {
      *             than len; on failure, -1
      */
     public int write(byte[] buf, int pos, int len) {
-        return -1;
+        //TODO: Figure out cases when either return -1 or something lower than len
+        //TODO: limit payload size to Transport.MAX_PAYLOAD_SIZE
+        byte[] payload = new byte[Math.min(len, Transport.MAX_PAYLOAD_SIZE)];
+        int sentBytes = 0;
+        for (int i = pos; i < Math.min(pos + len, buf.length) && sentBytes < Transport.MAX_PAYLOAD_SIZE; i++) {
+            sentBytes++;
+            payload[i - pos] = buf[i];
+        }
+
+        // seqNo represents the number of bytes sent until now.
+        // seqNo + 1 is the first byte from the packet that's being sent now
+        node.logError("Sending data to server with seqNo = " + this.seqNo + 1);
+        Transport transportPacket = new Transport(this.localPort, this.remotePort, Transport.DATA, 0, this.seqNo + 1, payload);
+        byte[] packet = transportPacket.pack();
+        this.seqNo += sentBytes;
+
+        node.sendSegment(node.getAddr(), this.remoteAddr, Protocol.TRANSPORT_PKT, packet);
+        return sentBytes;
     }
 
     /**
@@ -275,14 +366,75 @@ public class TCPSock {
      *             than len; on failure, -1
      */
     public int read(byte[] buf, int pos, int len) {
-        return -1;
+        return receiveBuffer.read(buf, pos, len);
     }
 
     /*
      * End of socket API
      */
 
+
+    /**
+     * Initiate closure of a connection (graceful shutdown)
+     */
+    public void close() {
+        if (receiveBuffer.isEmpty()) {
+            this.release();
+        }
+        else {
+            this.state = State.SHUTDOWN;
+            addTimer(CLOSE_TIMEOUT, this, "close", null, null);
+        }
+    }
+
+    /**
+     * Release a connection immediately (abortive shutdown)
+     */
+    public void release() {
+        this.seqNo++;
+        Transport finPacket = new Transport(this.localPort, this.remotePort, Transport.FIN, 0, this.seqNo, new byte[0]);
+        this.state = State.CLOSED;
+
+        if (this.sockType == SockType.SERVER_CONNECTION) {
+            this.sendTransportPacket(finPacket);
+        } else if (this.sockType == SockType.CLIENT_CONNECTION) {
+            this.sendTransportPacket(finPacket);
+            tcpManager.deregisterSock(this.localPort);
+        } else {
+            //shouldn't be here!
+            node.logError("Release requested on a server socket! Noop.");
+            return;
+        }
+    }
+
+    public boolean isConnectionPending() {
+        return (state == State.SYN_SENT);
+    }
+
+    public boolean isClosed() {
+        return (state == State.CLOSED);
+    }
+
+    public boolean isConnected() {
+        return (state == State.ESTABLISHED);
+    }
+
+    public boolean isClosurePending() {
+        return (state == State.SHUTDOWN);
+    }
+
     public int getLocalPort() {
         return localPort;
+    }
+
+    private void addTimer(long deltaT, Object object, String methodName, String[] paramTypes, Object[] params) {
+        try {
+            Method method = Callback.getMethod(methodName, object, paramTypes);
+            Callback cb = new Callback(method, this, params);
+            node.addTimer(cb, deltaT);
+        }catch(Exception e) {
+            node.logError("Failed to add timer callback. Method Name: " + methodName +
+                    "\nException: " + e);
+        }
     }
 }

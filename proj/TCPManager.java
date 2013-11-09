@@ -53,6 +53,10 @@ public class TCPManager {
         return (socketSpace.register(localPort, socket));
     }
 
+    public int deregisterSock(int localPort) {
+        return (socketSpace.deregister(localPort));
+    }
+
     public void incomingTransportPacket(int remoteAddr, int remotePort, int localAddr, int localPort, Transport transportMessage) {
         if (socketSpace.portBusy(localPort)) {
             // We have already created a connection socket for this port
