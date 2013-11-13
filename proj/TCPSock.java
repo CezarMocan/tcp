@@ -39,6 +39,7 @@ public class TCPSock {
     public static int RCV_BUFFER_SIZE = 65536;
     public static int CLOSE_TIMEOUT = 1000; // Check every second if all data has been read from buffer and can close socket
     public static int RETRANSMIT_DELAY = 500;
+    public static int DEFAULT_WINDOW_SIZE = 10;
 
     private State state;
     private Node node;
@@ -55,8 +56,11 @@ public class TCPSock {
 
     private Random randomGenerator;
 
-    private TCPSockBuffer receiveBuffer;
-    private TCPSockBuffer sendBuffer;
+    private ReceiveBuffer receiveBuffer;
+
+    private SendBuffer sendBuffer;
+    private int windowSize;
+    private int base;
 
     private ISocketSpace pendingConnections;
     private ISocketSpace workingConnections;
@@ -79,6 +83,79 @@ public class TCPSock {
         }
 
         this.localPort = localPort;
+        return 0;
+    }
+
+    /**
+     * Listen for connections on a socket
+     * @param backlog int Maximum number of pending connections
+     * @return int 0 on success, -1 otherwise
+     */
+    public int listen(int backlog) {
+        this.sockType = SockType.SERVER_SOCKET;
+        this.backlog = backlog;
+        this.state = State.LISTEN;
+
+        this.pendingConnections = new SocketSpace<RemoteHost>(backlog);
+        this.workingConnections = new SocketSpace<RemoteHost>();
+
+        //TODO: Create task that fires periodically for removing closed sockets
+
+        return 0;
+    }
+
+    /**
+     * Accept a connection on a socket
+     *
+     * @return TCPSock The first established connection on the request queue
+     */
+    public TCPSock accept() {
+        Pair<RemoteHost, TCPSock> currentConnection = pendingConnections.pop();
+        if (currentConnection == null) {
+            return null;
+        }
+
+        int result = workingConnections.register(currentConnection.fst, currentConnection.snd);
+        node.logError("accept(): workingConnections.register returned " + result);
+        return currentConnection.snd;
+    }
+
+    /**
+     * Initiate connection to a remote socket
+     *
+     * @param destAddr int Destination node address
+     * @param destPort int Destination port
+     * @return int 0 on success, -1 otherwise
+     */
+    public int connect(int destAddr, int destPort) {
+        if (this.sockType == SockType.UNDEFINED)
+            this.sockType = SockType.CLIENT_CONNECTION;
+
+        if (this.remoteAddr != -1 || this.remotePort != -1) {
+            node.logError("Socket already bound to address" + this.remoteAddr + " port: " + this.remotePort);
+            return -1;
+        }
+
+        this.remoteAddr = destAddr;
+        this.remotePort = destPort;
+
+        if (this.sockType == SockType.CLIENT_CONNECTION) {
+            this.randomGenerator = new Random(System.nanoTime());
+            this.seqNo = randomGenerator.nextInt(1000000);
+            this.windowSize = DEFAULT_WINDOW_SIZE;
+            this.sendBuffer = new SendBuffer(windowSize);
+            this.base = this.seqNo;
+
+            // Send SYN packet to server
+            Transport synMessage = new Transport(this.localPort, this.remotePort, Transport.SYN, 0, this.seqNo, new byte[0]);
+            this.sendTransportPacket(synMessage);
+            this.state = State.SYN_SENT;
+
+        } else if (this.sockType == SockType.SERVER_CONNECTION) {
+            this.receiveBuffer = new ReceiveBuffer(RCV_BUFFER_SIZE);
+            this.state = State.ESTABLISHED;
+        }
+
         return 0;
     }
 
@@ -204,11 +281,20 @@ public class TCPSock {
             if (this.state == State.CLOSED) { // Sent FIN, received ACK for FIN
                 return;
             }
-            //TODO: This shit is only for stop'n'wait
-            if (transportMessage.getSeqNum() > this.seqNo)
+
+            if (transportMessage.getSeqNum() > this.base) {
                 node.logOutput(":");
-            else
+                while (!sendBuffer.isEmpty() && sendBuffer.peek().getSeqNum() < transportMessage.getSeqNum()) {
+                    sendBuffer.poll();
+                }
+
+                this.base = transportMessage.getSeqNum();
+                if (!this.sendBuffer.isEmpty()) {
+                    createTimerData();
+                }
+            } else {
                 node.logOutput("?");
+            }
 
             node.logError("Received reply from server " + remoteHost.toString() + " like a boss! " + transportMessage.getSeqNum());
             this.state = State.ESTABLISHED;
@@ -239,7 +325,7 @@ public class TCPSock {
             node.logError("Received FIN on server connection socket " + this.seqNo + " " + transportMessage.getSeqNum());
             if (transportMessage.getSeqNum() != this.seqNo) {
                 node.logError("Dropped!");
-                return; // TODO: DROP? is it ok?
+                return;
             }
             this.state = State.CLOSED;
             this.close();
@@ -276,7 +362,7 @@ public class TCPSock {
         if (this.seqNo != transportMessage.getSeqNum()) {
             if (this.seqNo > transportMessage.getSeqNum()) { // Resend ACK
                 node.logOutput("!");
-                Transport ackMessage = new Transport(this.localPort, this.remotePort, Transport.ACK, 0, transportMessage.getSeqNum() + transportMessage.getPayload().length, new byte[0]);
+                Transport ackMessage = new Transport(this.localPort, this.remotePort, Transport.ACK, 0, this.seqNo, new byte[0]);
                 sendTransportPacket(ackMessage);
                 return;
             } else { // Received packet from the future; TODO: DROP?!?
@@ -296,83 +382,8 @@ public class TCPSock {
         this.seqNo = this.seqNo + transportMessage.getPayload().length;
         Transport ackMessage = new Transport(this.localPort, this.remotePort, Transport.ACK, 0, this.seqNo, new byte[0]);
         sendTransportPacket(ackMessage);
-        // FUTU-TI MORTII MA-TII DE TEMA BAGA-MI-AS PULA IN GURA TA PIZDA MA-TII SA-MI BAGI MANA IN CUR SI SA-MI FACI O LABA LA CACAT
     }
 
-    /*
-     * The following are the socket APIs of TCP transport service.
-     * All APIs are NON-BLOCKING.
-     */
-
-    /**
-     * Listen for connections on a socket
-     * @param backlog int Maximum number of pending connections
-     * @return int 0 on success, -1 otherwise
-     */
-    public int listen(int backlog) {
-        this.sockType = SockType.SERVER_SOCKET;
-        this.backlog = backlog;
-        this.state = State.LISTEN;
-
-        this.pendingConnections = new SocketSpace<RemoteHost>(backlog);
-        this.workingConnections = new SocketSpace<RemoteHost>();
-
-        //TODO: Create task that fires periodically for removing closed sockets
-
-        return 0;
-    }
-
-    /**
-     * Accept a connection on a socket
-     *
-     * @return TCPSock The first established connection on the request queue
-     */
-    public TCPSock accept() {
-        Pair<RemoteHost, TCPSock> currentConnection = pendingConnections.pop();
-        if (currentConnection == null) {
-            return null;
-        }
-
-        int result = workingConnections.register(currentConnection.fst, currentConnection.snd);
-        node.logError("accept(): workingConnections.register returned " + result);
-        return currentConnection.snd;
-    }
-
-    /**
-     * Initiate connection to a remote socket
-     *
-     * @param destAddr int Destination node address
-     * @param destPort int Destination port
-     * @return int 0 on success, -1 otherwise
-     */
-    public int connect(int destAddr, int destPort) {
-        if (this.sockType == SockType.UNDEFINED)
-            this.sockType = SockType.CLIENT_CONNECTION;
-
-        if (this.remoteAddr != -1 || this.remotePort != -1) {
-            node.logError("Socket already bound to address" + this.remoteAddr + " port: " + this.remotePort);
-            return -1;
-        }
-
-        this.remoteAddr = destAddr;
-        this.remotePort = destPort;
-        this.receiveBuffer = new TCPSockBuffer(RCV_BUFFER_SIZE);
-
-        if (this.sockType == SockType.CLIENT_CONNECTION) {
-            this.randomGenerator = new Random(System.nanoTime());
-            this.seqNo = randomGenerator.nextInt(1000000);
-
-            // Send SYN packet to server
-            Transport synMessage = new Transport(this.localPort, this.remotePort, Transport.SYN, 0, this.seqNo, new byte[0]);
-            this.sendTransportPacket(synMessage);
-            this.state = State.SYN_SENT;
-
-        } else if (this.sockType == SockType.SERVER_CONNECTION) {
-            this.state = State.ESTABLISHED;
-        }
-
-        return 0;
-    }
 
     // Method for sending non-DATA packets
     // All the DATA packets should be sent using write()
@@ -421,55 +432,21 @@ public class TCPSock {
             payload[i - pos] = buf[i];
         }
 
-        if (this.lastAckReceived >= this.seqNo + 1) { // Nothing dropped until now, not waiting for an ACK for an old message
-            // seqNo represents the number of bytes sent until now.
-            // seqNo + 1 is the first byte from the packet that's being sent now
-            node.logError("Sending data to server with seqNo = " + (this.seqNo + 1));
-            lastSentPacket = new Transport(this.localPort, this.remotePort, Transport.DATA, 0, this.seqNo + 1, payload);
-
-            byte[] packet = lastSentPacket.pack();
-
-            //TODO: Is this supposed to be here?
-            this.seqNo += sentBytes;
-
-            node.sendSegment(node.getAddr(), this.remoteAddr, Protocol.TRANSPORT_PKT, packet);
-            createTimer(lastSentPacket);
-            return sentBytes;
-        } else {
-            node.logError("Packet not sent because I haven't received ACK from previous one! " + this.lastAckReceived + " " + this.seqNo);
+        if (sendBuffer.isFull())
             return 0;
-        }
-    }
 
-    private void createTimer(Transport lastSentPacket) {
-        String[] paramTypes = new String[1];
-        paramTypes[0] = "Transport";
+        node.logError("Sending data to server with seqNo = " + (this.seqNo + 1));
+        lastSentPacket = new Transport(this.localPort, this.remotePort, Transport.DATA, 0, this.seqNo + 1, payload);
+        byte[] packet = lastSentPacket.pack();
+        this.seqNo += sentBytes;
+        node.sendSegment(node.getAddr(), this.remoteAddr, Protocol.TRANSPORT_PKT, packet);
 
-        Object[] params = new Object[1];
-        params[0] = lastSentPacket;
+        if (sendBuffer.isEmpty())
+            createTimerData();
 
-        node.logError("Created timer for " + lastSentPacket.getSeqNum() + " at time " + System.currentTimeMillis());
-        addTimer(RETRANSMIT_DELAY, this, "checkResend", paramTypes, params);
-    }
+        sendBuffer.append(lastSentPacket);
 
-    public void checkResend(Transport message) {
-        node.logError("checkResend for " + message.getSeqNum() + " " + message.getType() + " " + System.currentTimeMillis());
-        node.logError("checkResend: " + message.getSeqNum() + " " + this.lastAckReceived);
-        node.logError("checkResend: Current seqNo at client is: " + this.seqNo);
-        node.logError("\n");
-        if (message.getType() == Transport.DATA) {
-            if (this.lastAckReceived < message.getSeqNum() + message.getPayload().length) {
-                byte[] bytes = message.getPayload();
-                this.seqNo -= bytes.length;
-                node.logOutput("!");
-                write(bytes, 0, bytes.length);
-            }
-        } else if (message.getType() == Transport.SYN || message.getType() == Transport.FIN) {
-            if (this.lastAckReceived < message.getSeqNum() + 1) {
-                node.logOutput("!");
-                sendTransportPacket(message);
-            }
-        }
+        return sentBytes;
     }
 
     /**
@@ -499,7 +476,7 @@ public class TCPSock {
             return;
 
         if (this.sockType == SockType.CLIENT_CONNECTION) {
-            if (this.seqNo + 1 == this.lastAckReceived) {
+            if (this.sendBuffer.isEmpty()) {
                 this.release();
             }
             else {
@@ -528,6 +505,7 @@ public class TCPSock {
             this.state = State.CLOSED;
         } else if (this.sockType == SockType.CLIENT_CONNECTION) {
             this.seqNo++;
+            this.base++;
             Transport finPacket = new Transport(this.localPort, this.remotePort, Transport.FIN, 0, this.seqNo, new byte[0]);
             this.state = State.CLOSED;
             this.sendTransportPacket(finPacket);
@@ -572,6 +550,54 @@ public class TCPSock {
             node.logError("Failed to add timer callback. Method Name: " + methodName +
                     "\nException: " + e);
         }
+    }
+
+    private void createTimer(Transport lastSentPacket) {
+        String[] paramTypes = new String[1];
+        paramTypes[0] = "Transport";
+
+        Object[] params = new Object[1];
+        params[0] = lastSentPacket;
+
+        node.logError("Created timer for " + lastSentPacket.getSeqNum() + " at time " + System.currentTimeMillis());
+        addTimer(RETRANSMIT_DELAY, this, "checkResend", paramTypes, params);
+    }
+
+    public void checkResend(Transport message) {
+        node.logError("checkResend for " + message.getSeqNum() + " " + message.getType() + " " + System.currentTimeMillis());
+        node.logError("checkResend: " + message.getSeqNum() + " " + this.lastAckReceived);
+        node.logError("checkResend: Current seqNo at client is: " + this.seqNo);
+        node.logError("\n");
+        if (message.getType() == Transport.DATA) {
+            node.logError("checkResend for DATA message - WRONG!");
+            throw new RuntimeException();
+        } else if (message.getType() == Transport.SYN || message.getType() == Transport.FIN) {
+            if (this.lastAckReceived < message.getSeqNum() + 1) {
+                node.logOutput("!");
+                sendTransportPacket(message);
+            }
+        }
+    }
+
+    private void createTimerData() {
+        String[] paramTypes = new String[1];
+        paramTypes[0] = "java.lang.Integer";
+
+        Object[] params = new Object[1];
+        params[0] = ((Integer) this.base);
+
+        node.logError("Created data timer for " + this.base + " at time " + System.currentTimeMillis());
+        addTimer(RETRANSMIT_DELAY, this, "checkResendData", paramTypes, params);
+    }
+
+    public void checkResendData(Integer oldBase) { // Resend the whole sendBuffer and add new timer
+        if (oldBase < this.base)
+            return;
+
+        for (Transport currentPacket : sendBuffer.getBuffer())
+            node.sendSegment(node.getAddr(), this.remoteAddr, Protocol.TRANSPORT_PKT, currentPacket.pack());
+
+        createTimerData();
     }
 
     private void updateLastAction() {

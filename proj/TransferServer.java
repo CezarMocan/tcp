@@ -84,6 +84,7 @@ public class TransferServer extends FishThread {
         private long interval;
         private byte[] buf;
         private int pos;
+        private long timer;
 
         public TransferWorker(Manager manager, Node node, TCPSock sock,
                               long interval, int sz) {
@@ -92,6 +93,7 @@ public class TransferServer extends FishThread {
             this.interval = interval;
             this.buf = new byte[sz];
             this.pos = 0;
+            this.timer = System.currentTimeMillis();
 
             this.setInterval(interval);
         }
@@ -133,8 +135,13 @@ public class TransferServer extends FishThread {
 
                 pos += count;
 
-                //node.logOutput("time = " + manager.now() + " msec");
-                //node.logOutput("bytes received = " + count);
+/*
+                if (System.currentTimeMillis() - this.timer > 1000) {
+                    node.logOutput("time = " + manager.now() + " msec");
+                    node.logOutput("bytes received = " + count);
+                    this.timer = System.currentTimeMillis();
+                }
+*/
                 return;
             }
 

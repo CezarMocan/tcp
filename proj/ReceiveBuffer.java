@@ -1,12 +1,12 @@
 import java.util.LinkedList;
 import java.util.Queue;
 
-public class TCPSockBuffer {
+public class ReceiveBuffer {
     private int maxBufferSize;
     private int currentBufferSize;
     private Queue<Byte> buffer;
 
-    public TCPSockBuffer(int maxBufferSize) {
+    public ReceiveBuffer(int maxBufferSize) {
         this.maxBufferSize = maxBufferSize;
         this.currentBufferSize = 0;
         buffer = new LinkedList<Byte>();
