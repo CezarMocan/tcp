@@ -16,4 +16,6 @@ public interface ISocketSpace<K> {
     public TCPSock get(K key);
     public boolean portBusy(K key);
     public Pair<K, TCPSock> pop();
+    public int size();
+    public void cleanup();
 }

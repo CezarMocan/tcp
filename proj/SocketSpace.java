@@ -1,10 +1,12 @@
 import com.sun.tools.javac.util.Pair;
 
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 
 public class SocketSpace<K> implements ISocketSpace<K> {
 
+    private static final long CLOSE_CONNECTION_TIME = 5000;
     private Map<K, TCPSock> sockSpace;
     private int maxSize;
 
@@ -61,5 +63,24 @@ public class SocketSpace<K> implements ISocketSpace<K> {
         //TODO: make this safer
         K key = sockSpace.keySet().iterator().next();
         return new Pair<K, TCPSock>(key, sockSpace.remove(key));
+    }
+
+    @Override
+    public int size() {
+        return sockSpace.size();
+    }
+
+    @Override
+    public void cleanup() {
+        Iterator <Map.Entry<K, TCPSock>> iterator = sockSpace.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<K, TCPSock> value = iterator.next();
+            if (value.getValue().isClosed())
+                iterator.remove();
+            else if (System.currentTimeMillis() - value.getValue().getLastAction() > CLOSE_CONNECTION_TIME) {
+                value.getValue().close();
+                iterator.remove();
+            }
+        }
     }
 }
