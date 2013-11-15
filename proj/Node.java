@@ -362,4 +362,8 @@ public class Node {
 
         return false;
     }
+
+    public long now() {
+        return this.manager.now();
+    }
 }

@@ -17,7 +17,7 @@ public class TransferClient extends FishThread {
     private long interval;
     private byte[] buf;
 
-    public static final long DEFAULT_CLIENT_INTERVAL = 1000;
+    public static final long DEFAULT_CLIENT_INTERVAL = 10;
     public static final int DEFAULT_BUFFER_SZ = 65536;
 
     // number of bytes to send
@@ -84,7 +84,8 @@ public class TransferClient extends FishThread {
             int len = Math.min(buf.length - index, amount);
             int count = sock.write(buf, index, len);
 
-            node.logError("Sent " + count + " bytes to server!");
+            if (count != 0)
+                node.logError("Sent " + count + " bytes to server!");
 
             if (count == -1) {
                 // on error, release the socket immediately

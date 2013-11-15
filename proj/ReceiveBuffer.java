@@ -47,4 +47,8 @@ public class ReceiveBuffer {
         }
         return buffer.isEmpty();
     }
+
+    public int getWindowSize() {
+        return maxBufferSize - currentBufferSize;
+    }
 }

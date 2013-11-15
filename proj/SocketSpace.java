@@ -6,7 +6,7 @@ import java.util.Map;
 
 public class SocketSpace<K> implements ISocketSpace<K> {
 
-    private static final long CLOSE_CONNECTION_TIME = 5000;
+    private static final long CLOSE_CONNECTION_TIME = 10000;
     private Map<K, TCPSock> sockSpace;
     private int maxSize;
 
@@ -72,6 +72,7 @@ public class SocketSpace<K> implements ISocketSpace<K> {
 
     @Override
     public void cleanup() {
+        //System.err.println("cleanup() called");
         Iterator <Map.Entry<K, TCPSock>> iterator = sockSpace.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<K, TCPSock> value = iterator.next();
