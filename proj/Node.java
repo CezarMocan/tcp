@@ -25,6 +25,7 @@ import java.lang.reflect.Method;
  */
 public class Node {
     private final long PingTimeout = 10000;  // Timeout pings in 10 seconds
+    private static final int DEBUG = 0;
 
     private Manager manager;
     private int addr;
@@ -249,7 +250,8 @@ public class Node {
     }
 
     public void logError(String output) {
-	this.log(output, System.err);
+        if (DEBUG == 1)
+	        this.log(output, System.err);
     }
 
     public void logOutput(String output) {

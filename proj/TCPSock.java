@@ -43,8 +43,9 @@ public class TCPSock {
     //public static int RCV_BUFFER_SIZE = 65536;
     public static int CLOSE_TIMEOUT = 1000; // Check every second if all data has been read from buffer and can close socket
     public static int RETRANSMIT_DELAY = 500;
-    public static int DEFAULT_WINDOW_SIZE = 600;
+    public static int DEFAULT_WINDOW_SIZE = 6000;
     public static int FAKE_ACK_TIMEOUT = 500;
+    public static int DEFAULT_MSS = 107;
 
     private State state;
     private Node node;
@@ -59,6 +60,7 @@ public class TCPSock {
 
     private int seqNo;
     Map<Integer, Integer> hasTimer;
+    Map<Integer, Long> dataResendTimer;
 
     private Random randomGenerator;
 
@@ -71,7 +73,10 @@ public class TCPSock {
     private ISocketSpace workingConnections;
 
     private Transport lastSentPacket;
-    int lastAckReceived, lastAckReceived2;
+    int lastAckReceived, lastAckReceived2, lastAckReceived3;
+
+    private int cwnd;
+    private int ssthresh;
 
     private long lastAction;
 
@@ -168,16 +173,18 @@ public class TCPSock {
             this.sendBuffer = new SendBuffer(DEFAULT_WINDOW_SIZE);
             this.base = this.seqNo;
             this.hasTimer = new HashMap<Integer, Integer>();
+            this.dataResendTimer = new HashMap<Integer, Long>();
             this.fakeAckSent = -1;
-
-            // Send SYN packet to server
-            Transport synMessage = new Transport(this.localPort, this.remotePort, Transport.SYN, 0, this.seqNo, new byte[0]);
-            this.sendTransportPacket(synMessage);
             this.state = State.SYN_SENT;
             this.timeoutInterval = 1000;
             this.estimatedRTT = 1000;
             this.devRTT = 0;
             this.timeoutAck = -1;
+            this.cwnd = 10 * DEFAULT_MSS;
+
+            // Send SYN packet to server
+            Transport synMessage = new Transport(this.localPort, this.remotePort, Transport.SYN, 0, this.seqNo, new byte[0]);
+            this.sendTransportPacket(synMessage);
 
         } else if (this.sockType == SockType.SERVER_CONNECTION) {
             this.receiveBuffer = new ReceiveBuffer(DEFAULT_WINDOW_SIZE);
@@ -195,7 +202,7 @@ public class TCPSock {
         this.state = State.CLOSED;
 
         this.remotePort = this.remoteAddr = -1;
-        this.lastAckReceived = lastAckReceived2 = -1;
+        this.lastAckReceived = lastAckReceived2 = lastAckReceived3 = -1;
     }
 
     private TCPSock(Node node, TCPManager tcpManager, int localPort, SockType sockType) throws Exception {
@@ -316,6 +323,7 @@ public class TCPSock {
                 sendBuffer.setWindowSize(transportMessage.getWindow());
                 lastAckReceived = randomGenerator.nextInt();
                 lastAckReceived2 = randomGenerator.nextInt();
+                lastAckReceived3 = randomGenerator.nextInt();
                 return;
             }
 
@@ -338,17 +346,29 @@ public class TCPSock {
                 }
 
             } else {
+                if (this.base > this.seqNo)
+                    return;
                 node.logOutput("?");
                 node.logError("Received " + transportMessage.getSeqNum() + " base = " + this.base + " seqNo = " + this.seqNo);
             }
 
             node.logError("Received reply from server " + remoteHost.toString() + " like a boss! " + transportMessage.getSeqNum());
             this.state = State.ESTABLISHED;
-            if (transportMessage.getSeqNum() == lastAckReceived && transportMessage.getSeqNum() == lastAckReceived2) {
+            if (transportMessage.getSeqNum() == lastAckReceived && transportMessage.getSeqNum() == lastAckReceived2 &&
+                    transportMessage.getSeqNum() == lastAckReceived3) {
                 node.logError("Triple duplicate ACK! " + lastAckReceived);
-                checkResendData(this.base);
+
+                this.cwnd = this.cwnd / 2;
+                if (this.cwnd < DEFAULT_MSS)
+                    this.cwnd = DEFAULT_MSS;
+
+                checkResendData(this.base, 1);
+                lastAckReceived = -1;
+                lastAckReceived2 = -1;
+                lastAckReceived3 = -1;
             }
 
+            lastAckReceived3 = lastAckReceived2;
             lastAckReceived2 = lastAckReceived;
             lastAckReceived = transportMessage.getSeqNum();
         } else {
@@ -367,7 +387,7 @@ public class TCPSock {
                 connectionSocket = pendingConnections.get(remoteHost);
 
             connectionSocket.receiveFin(remoteHost, transportMessage);
-            //workingConnections.deregister(remoteHost);
+
             return;
         }
 
@@ -382,7 +402,7 @@ public class TCPSock {
                 node.logError("Dropped!");
                 return;
             }
-            this.state = State.CLOSED;
+
             this.close();
         } else {
             //shouldn't be here!
@@ -424,6 +444,7 @@ public class TCPSock {
 
         if (this.seqNo != transportMessage.getSeqNum()) {
             node.logOutput("!");
+            node.logError("Expected: " + this.seqNo + " got: " + transportMessage.getSeqNum());
             Transport ackMessage = new Transport(this.localPort, this.remotePort, Transport.ACK, receiveBuffer.getWindowSize(), this.seqNo, new byte[0]);
             sendTransportPacket(ackMessage);
             return;
@@ -491,11 +512,18 @@ public class TCPSock {
             payload[i - pos] = buf[i];
         }
 
+
+        if (sendBuffer.getCurrentBufferSizeBytes() + payload.length > cwnd) {
+            //node.logError("Rejected due to cwnd! " + cwnd);
+            return 0;
+        }
+
+
         if (sendBuffer.isFull(payload.length)) {
             sentBytes = 0;
             payload = new byte[0];
-            node.logError("Sending fake to server? " + node.now() + " " + fakeAckSent);
-            if (node.now() - fakeAckSent < FAKE_ACK_TIMEOUT)
+            //node.logError("Sending fake to server? " + node.now() + " " + fakeAckSent);
+            if ((node.now() - fakeAckSent < FAKE_ACK_TIMEOUT) || (sendBuffer.getMaxBufferSizeBytes()) > DEFAULT_MSS)
                 return 0;
 
             node.logError("-->Sending!!!");
@@ -665,41 +693,59 @@ public class TCPSock {
     }
 
     private void createTimerData() {
-        String[] paramTypes = new String[1];
-        paramTypes[0] = "java.lang.Integer";
+        String[] paramTypes = new String[2];
+        paramTypes[0] = paramTypes[1] = "java.lang.Integer";
 
-        Object[] params = new Object[1];
+        Object[] params = new Object[2];
         params[0] = ((Integer) this.base);
+        params[1] = 0;
 
         node.logError("Created data timer for " + this.base + " at time " + System.currentTimeMillis());
         addTimer(timeoutInterval, this, "checkResendData", paramTypes, params);
     }
 
-    public void checkResendData(Integer oldBase) { // Resend the whole sendBuffer and add new timer
+    public void checkResendData(Integer oldBase, Integer type) { // Resend the whole sendBuffer and add new timer
         if (oldBase < this.base)
             return;
 
-        node.logError("checkResendData: Resending...");
+        //TODO
+        if (dataResendTimer.containsKey(oldBase))
+            if (node.now() - dataResendTimer.get(oldBase) < timeoutInterval)
+                return;
+
+        dataResendTimer.put(oldBase, node.now());
+
+        if (type == 0)
+            cwnd = DEFAULT_MSS;
+
+        node.logError("checkResendData: Resending... type = " + type);
         for (Transport currentPacket : sendBuffer.getBuffer()) {
             node.sendSegment(node.getAddr(), this.remoteAddr, Protocol.TRANSPORT_PKT, currentPacket.pack());
-            node.logError("    Resending seqNo " + currentPacket.getSeqNum());
+            //node.logError("    Resending seqNo " + currentPacket.getSeqNum());
         }
 
         createTimerData();
     }
 
     public void updateRTTEstimations(long time) {
+        // Drop absurdly large estimations
+        if ((1.0 * time) / (1.0 * estimatedRTT + devRTT) > 2.0 && time > 4000)
+            return;
+
         this.sampleRTT = time;
         this.estimatedRTT = (long) ((1.0 - ALPHA) * estimatedRTT + ALPHA * sampleRTT);
         this.devRTT = (long) ((1.0 - BETA) * devRTT + BETA * Math.abs(1.0 * sampleRTT - estimatedRTT));
         this.timeoutInterval = Math.max(3, estimatedRTT + 4 * devRTT);
         this.timeoutAck = -1;
 
-        node.logError("Updated RTT estimations: ");
+        this.cwnd += DEFAULT_MSS;
+
+        node.logError("Updated RTT estimations at time: " + node.now());
         node.logError("    Sample RTT = " + sampleRTT);
         node.logError("    Estimated RTT = " + estimatedRTT);
         node.logError("    DevRTT = " + devRTT);
         node.logError("    Timeout Interval = " + timeoutInterval);
+        node.logError("  New congestion window: " + cwnd);
     }
 
     private void updateLastAction() {

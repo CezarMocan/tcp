@@ -56,6 +56,10 @@ public class SendBuffer {
         return maxBufferSizeBytes;
     }
 
+    public int getCurrentBufferSizeBytes() {
+        return currentBufferSizeBytes;
+    }
+
     public boolean isFull(int addSize) {
         if (this.currentBufferSizeBytes + addSize >= this.maxBufferSizeBytes)
             return true;

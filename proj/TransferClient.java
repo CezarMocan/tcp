@@ -64,9 +64,9 @@ public class TransferClient extends FishThread {
 
             if (amount == 0) {
                 // sending completed, initiate closure of connection
-                node.logOutput("time = " + manager.now());
-                node.logOutput("sending completed");
-                node.logOutput("closing connection...");
+//                node.logOutput("time = " + manager.now());
+//                node.logOutput("sending completed");
+//                node.logOutput("closing connection...");
                 sock.close();
                 return;
             }
